@@ -36,13 +36,31 @@ def connection_error():
 AUTH_PARSERS = [
     ('ec2', 'Authenticate to ec2', [
         [['pkcs7'], {'help': 'The ec2 pkcs7 cert to send in return for a token',
-                     'action': 'store_true'}],
+                     'nargs': '+'}],
         [['--nonce', '-n'], {'help': 'The nonce created by a client of this backend',
-                             'action': 'store_true'}],
+                             'nargs': '?'}],
         [['--role', '-r'], {'help': 'Name of the role against which the login is being attempted',
-                            'action': 'store_true'}],
+                            'nargs': '+'}],
         [['--out', '-o'], {'help': 'Print the token',
                              'action': 'store_true'}]])
+]
+
+SECRET_PARSERS = [
+    ('read', 'Read a secret value from a key located at a path', [
+        [['path'], {'help': 'The path to retrieve a key from',
+                            'nargs': '+'}],
+        [['key'], {'help': 'The key to retreive',
+                           'nargs': '+'}]),
+    ('write', 'write a key and value to a path', [
+        [['path'], {'help': 'The path to retrieve a key from',
+                            'nargs': '+'}],
+        [['key'], {'help': 'The key to set',
+                           'nargs': '+'}]),
+        [['value'], {'help': 'The value to set at key',
+                           'nargs': '+'}]),
+    ('ls', 'list objects on path', [
+        [['path'], {'help': 'The path to list',
+                            'nargs': '+'}]
 ]
 
 def add_auth_args(parser):
@@ -57,6 +75,22 @@ def add_auth_args(parser):
                                           title='Auth Utilities')
 
     for (name, help_text, arguments) in AUTH_PARSERS:
+        parser = subparsers.add_parser(name, help=help_text)
+        for (args, kwargs) in arguments:
+            parser.add_argument(*args, **kwargs)
+
+def add_secret_args(parser):
+    """Add the secret command and arguments.
+
+    :param argparse.Subparser parser: parser
+
+    """
+    secret_parser = parser.add_parser('secret', help='Secret Utilities')
+
+    subparsers = secret_parser.add_subparsers(dest='action',
+                                            title='Secret Utilities')
+
+    for (name, help_text, arguments) in SECRET_PARSERS:
         parser = subparsers.add_parser(name, help=help_text)
         for (args, kwargs) in arguments:
             parser.add_argument(*args, **kwargs)
@@ -82,6 +116,7 @@ def parse_cli_args():
 
     sparser = parser.add_subparsers(title='Commands', dest='command')
     add_auth_args(sparser)
+    add_kv_args(sparser)
     return parser.parse_args()
 
 def auth_ec2(vault, args): 
@@ -107,6 +142,64 @@ AUTH_ACTIONS = {
     'ec2': auth_ec2
 }
 
+def secret_read(vault, args): 
+    """Read key from path
+
+    :param string vault: The Vault instance
+    :param argparser.namespace args: The cli args
+
+    """
+    handle = sys.stdout
+    try:
+        result = vault.read(args.path)
+        if args.key:
+            handle.write(result['data'][args.key])
+        else:
+            handle.write(result['data'])
+
+    except exceptions.ConnectionError:
+        connection_error()
+
+def secret_write(vault, args): 
+    """write key to path
+
+    :param string vault: The Vault instance
+    :param argparser.namespace args: The cli args
+
+    """
+    handle = sys.stdout
+    try:
+        result = vault.write(args.path, **{args.key: args.value})
+        if args.key:
+            handle.write(result['data'][args.key])
+        else:
+            handle.write(result['data'])
+
+    except exceptions.ConnectionError:
+        connection_error()
+
+def secret_list(vault, args): 
+    """list objects on path
+
+    :param string vault: The Vault instance
+    :param argparser.namespace args: The cli args
+
+    """
+    handle = sys.stdout
+    try:
+        result = vault.list(args.path)
+        for i in result['data']:
+            handle.write(i)
+
+    except exceptions.ConnectionError:
+        connection_error()
+
+SECRET_ACTIONS = {
+    'read': secret_read,
+    'write': secret_write,
+    'ls': secret_list
+}
+
 def main():
     """Entrypoint for the vault cli application"""
     args = parse_cli_args()
@@ -128,3 +221,5 @@ def main():
 
     if args.command == 'auth':
         AUTH_ACTIONS[args.action](vault, args)
+    if args.command == 'secret':
+        SECRET_ACTIONS[args.command][vault, args]
