@@ -3,6 +3,7 @@
 import argparse
 import sys
 import os
+import json
 try:
     import urlparse
 except ImportError:
@@ -13,6 +14,8 @@ from requests import exceptions
 import hvac
 
 VAULT_ENV_VAR = 'VAULT_ADDR'
+VAULT_TOKEN = 'VAULT_TOKEN'
+
 EPILOG = ('If the VAULT_ADDR environment variable is set, it will be '
           'parsed and used for default values when connecting.')
 
@@ -35,32 +38,23 @@ def connection_error():
 
 AUTH_PARSERS = [
     ('ec2', 'Authenticate to ec2', [
-        [['pkcs7'], {'help': 'The ec2 pkcs7 cert to send in return for a token',
-                     'nargs': '+'}],
-        [['--nonce', '-n'], {'help': 'The nonce created by a client of this backend',
-                             'nargs': '?'}],
-        [['--role', '-r'], {'help': 'Name of the role against which the login is being attempted',
-                            'nargs': '+'}],
+        [['pkcs7'], {'help': 'The ec2 pkcs7 cert to send in return for a token'}],
+        [['--nonce', '-n'], {'help': 'The nonce created by a client of this backend'}],
+        [['--role', '-r'], {'help': 'Name of the role against which the login is being attempted'}],
         [['--out', '-o'], {'help': 'Print the token',
                              'action': 'store_true'}]])
 ]
 
 SECRET_PARSERS = [
     ('read', 'Read a secret value from a key located at a path', [
-        [['path'], {'help': 'The path to retrieve a key from',
-                            'nargs': '+'}],
-        [['key'], {'help': 'The key to retreive',
-                           'nargs': '+'}]),
+        [['path'], {'help': 'The path to retrieve a key from'}],
+        [['--key', '-k'], {'help': 'The key to retreive'}]]),
     ('write', 'write a key and value to a path', [
-        [['path'], {'help': 'The path to retrieve a key from',
-                            'nargs': '+'}],
-        [['key'], {'help': 'The key to set',
-                           'nargs': '+'}]),
-        [['value'], {'help': 'The value to set at key',
-                           'nargs': '+'}]),
+        [['path'], {'help': 'The path to retrieve a key from'}],
+        [['kv'], {'help': 'The key value pairs must be in k=v format',
+                  'nargs': '+'}]]),
     ('ls', 'list objects on path', [
-        [['path'], {'help': 'The path to list',
-                            'nargs': '+'}]
+        [['path'], {'help': 'The path to list'}]])
 ]
 
 def add_auth_args(parser):
@@ -112,11 +106,13 @@ def parse_cli_args():
     parser.add_argument('--api-port',
                         default=parsed_defaults.port or 8200,
                         help='The vault API port to connect to')
-    parser.add_argument('--token', default=None, help='vault token')
+
+    vault_token = os.environ.get(VAULT_TOKEN, '')
+    parser.add_argument('--token', default=vault_token, help='vault token')
 
     sparser = parser.add_subparsers(title='Commands', dest='command')
     add_auth_args(sparser)
-    add_kv_args(sparser)
+    add_secret_args(sparser)
     return parser.parse_args()
 
 def auth_ec2(vault, args): 
@@ -153,9 +149,11 @@ def secret_read(vault, args):
     try:
         result = vault.read(args.path)
         if args.key:
-            handle.write(result['data'][args.key])
+            print(result['data'][args.key])
         else:
-            handle.write(result['data'])
+            for k, v in result['data'].iteritems():
+                print('{0}: {1}'.format(k, v))
+
 
     except exceptions.ConnectionError:
         connection_error()
@@ -169,11 +167,15 @@ def secret_write(vault, args):
     """
     handle = sys.stdout
     try:
-        result = vault.write(args.path, **{args.key: args.value})
-        if args.key:
-            handle.write(result['data'][args.key])
-        else:
-            handle.write(result['data'])
+        _kwargs = {}
+        for secret in args.kv:
+            pair = secret.split('=')
+            if (len(pair) > 1):
+                _kwargs[pair[0]] = pair[1]
+            else:
+                on_error('K/V pairs must be separated by an = sign, multiple pairs may be specified separated by a single space', 1)
+
+        result = vault.write(args.path, **_kwargs)
 
     except exceptions.ConnectionError:
         connection_error()
@@ -188,8 +190,8 @@ def secret_list(vault, args):
     handle = sys.stdout
     try:
         result = vault.list(args.path)
-        for i in result['data']:
-            handle.write(i)
+        for key in result['data']['keys']:
+            print(key)
 
     except exceptions.ConnectionError:
         connection_error()
@@ -216,10 +218,14 @@ def main():
     api_port = '8200'
     if args.api_port:
         api_port = args.api_port
+    
+    vault_token = None
+    if args.token:
+        vault_token = args.token
 
-    vault = hvac.Client(url='%s://%s:%s' % (api_scheme, api_host, api_port))
+    vault = hvac.Client(url='%s://%s:%s' % (api_scheme, api_host, api_port), token=vault_token)
 
     if args.command == 'auth':
         AUTH_ACTIONS[args.action](vault, args)
     if args.command == 'secret':
-        SECRET_ACTIONS[args.command][vault, args]
+        SECRET_ACTIONS[args.action](vault, args)
